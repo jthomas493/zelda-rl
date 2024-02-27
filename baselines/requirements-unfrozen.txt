@@ -1,0 +1,17 @@
+stable_baselines3
+gymnasium
+gym
+scikit-image
+scikit-learn
+pandas
+tqdm
+torch
+einops
+hnswlib
+numpy
+opencv-python
+seaborn
+pyboy
+tensorboard
+wandb
+gym-zelda-1
