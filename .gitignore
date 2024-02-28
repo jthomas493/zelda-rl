@@ -1,7 +1,6 @@
 __pycache__
 .DS_Store
 rollouts
-*.gb
 *.ram
 .ipynb_checkpoints
 raw_documentation
@@ -12,3 +11,4 @@ session_*
 PokemonRed.gb.state
 venv*
 .python-version
+*.nes

@@ -4,6 +4,7 @@ import collections
 import os
 from nes_py import NESEnv
 import numpy as np
+from .actions import MOVEMENT
 
 
 # the directory that houses this module
