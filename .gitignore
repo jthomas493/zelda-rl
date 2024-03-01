@@ -12,3 +12,5 @@ PokemonRed.gb.state
 venv*
 .python-version
 *.nes
+*.gb
+Dockerfile

@@ -11,7 +11,7 @@ from .actions import MOVEMENT
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-# the path to the Zelda 1 ROM
+# the path to the Zelda ROM
 ROM_PATH = os.path.join(MODULE_DIR, "_roms", "Zelda_1.nes")
 
 

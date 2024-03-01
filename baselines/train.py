@@ -2,7 +2,7 @@ import uuid
 from pathlib import Path
 import ray
 from ray.rllib.algorithms import ppo
-from zelda_env import Zelda1Env
+from zelda_gym_env import ZeldsGymEnv
 
 ep_length = 2048  # 2048 * 8
 sess_path = Path(f"session_{str(uuid.uuid4())[:8]}")
@@ -12,13 +12,13 @@ env_config = {
     "save_final_state": True,
     "early_stop": False,
     "action_freq": 24,
-    "init_state": "../../has_pokedex_nballs.state",
+    "init_state": "../../has_sword.State",
     "max_steps": ep_length,
     "print_rewards": False,
     "save_video": False,
     "fast_video": True,
     "session_path": sess_path,
-    "gb_path": "../../PokemonRed.gb",
+    "gb_path": "../../Zelda.gb",
     "debug": False,
     "sim_frame_dist": 500_000.0,
 }
@@ -37,7 +37,7 @@ ray.init(num_gpus=1)
 # Create the Algorithm from a config object.
 config = (
     ppo.PPOConfig()
-    .environment(Zelda1EnV, env_config=env_config)
+    .environment(ZeldsGymEnv, env_config=env_config)
     .framework("torch")
     .resources(num_gpus=4)
     .rollouts(num_rollout_workers=48)
