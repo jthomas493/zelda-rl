@@ -25,30 +25,35 @@ from pyboy.utils import WindowEvent
 from memory_addresses import *
 
 
-class ZeldsGymEnv(gym.Env):
+class ZeldaGymEnv(gym.Env):
 
     def __init__(self, config=None):
 
-        self.debug = config["debug"]
-        self.s_path = config["session_path"]
-        self.save_final_state = config["save_final_state"]
-        self.print_rewards = config["print_rewards"]
-        self.vec_dim = 42 * 42 * 3  # 4320 #1000
-        self.headless = config["headless"]
-        self.num_elements = 20000  # max
-        self.init_state = config["init_state"]
-        self.act_freq = config["action_freq"]
-        self.max_steps = config["max_steps"]
-        self.early_stopping = config["early_stop"]
-        self.save_video = config["save_video"]
-        self.fast_video = config["fast_video"]
-        self.video_interval = 256 * self.act_freq
+        self.headless = False
+        self.save_final_state = True
+        self.early_stop = False
+        self.action_freq = 30
+        self.init_state = config["init_state"]  # "./has_sword.state"
+        self.max_steps = 2048 * 8
+        self.print_rewards = True
+        self.save_video = False
+        self.fast_video = True
+        self.session_path = Path(f"session_{str(uuid.uuid4())[:8]}")
+        self.gb_path = "./Zelda.gb"
+        self.debug = False
+        self.sim_frame_dist = 2_000_000.0
+        self.use_screen_explore = True
+        self.extra_buttons = False
+        self.vec_dim = 42 * 42 * 3  # 4320  # 1000 # must match output shape!!!
+        self.num_elements = 20000
+
+        self.video_interval = 256 * self.action_freq
         self.downsample_factor = 2
         self.frame_stacks = 3
-        self.similar_frame_dist = config["sim_frame_dist"]
-        self.reset_count = 0
+        self.explore_weight = 1
+        # (1 if "explore_weight" not in config else config["explore_weight"])
         self.instance_id = str(uuid.uuid4())[:8]
-        self.s_path.mkdir(exist_ok=True)
+        self.reset_count = 0
         self.all_runs = []
 
         # Set this in SOME subclasses
@@ -78,7 +83,7 @@ class ZeldsGymEnv(gym.Env):
             WindowEvent.RELEASE_BUTTON_B,
         ]
 
-        self.output_shape = (42, 42, 3)  # (36, 40, 3)
+        self.output_shape = (42, 42, 3)  # (36, 40, 3) # must match vec_dim!!!
         self.mem_padding = 2
         self.memory_height = 8
         self.col_steps = 16
@@ -96,10 +101,10 @@ class ZeldsGymEnv(gym.Env):
         )
         # self.observation_space = spaces.Box(low=0, high=255, shape=self.output_full, dtype=np.uint8)
 
-        head = "headless" if config["headless"] else "SDL2"
+        head = "headless" if self.headless else "SDL2"
 
         self.pyboy = PyBoy(
-            config["gb_path"],
+            self.gb_path,
             debugging=False,
             disable_input=False,
             window_type=head,
@@ -109,10 +114,11 @@ class ZeldsGymEnv(gym.Env):
 
         self.screen = self.pyboy.botsupport_manager().screen()
 
-        self.pyboy.set_emulation_speed(0 if config["headless"] else 6)
+        self.pyboy.set_emulation_speed(0 if self.headless else 6)
         self.reset()
 
     def reset(self, *, seed=None, options=None):
+        self.seed = seed
         # restart game, skipping credits
         with open(self.init_state, "rb") as f:
             self.pyboy.load_state(f)
@@ -136,7 +142,7 @@ class ZeldsGymEnv(gym.Env):
         self.agent_stats = []
 
         if self.save_video:
-            base_dir = self.s_path / Path("rollouts")
+            base_dir = self.session_path / Path("rollouts")
             base_dir.mkdir(exist_ok=True)
             full_name = Path(
                 f"full_reset_{self.reset_count}_id{self.instance_id}"
@@ -155,7 +161,6 @@ class ZeldsGymEnv(gym.Env):
 
         self.levels_satisfied = False
         self.base_explore = 0
-        self.max_opponent_level = 0
         self.max_event_rew = 0
         self.max_level_rew = 0
         self.last_health = 1
@@ -240,7 +245,7 @@ class ZeldsGymEnv(gym.Env):
     def run_action_on_emulator(self, action):
         # press button then release after some steps
         self.pyboy.send_input(self.valid_actions[action])
-        for i in range(self.act_freq):
+        for i in range(self.action_freq):
             # release action, so they are stateless
             if i == 8:
                 if action < 4:
@@ -277,7 +282,6 @@ class ZeldsGymEnv(gym.Env):
                 "y": y_pos,
                 "map": map_n,
                 "health": health,
-                "ptypes": self.read_party(),
                 "hp": self.read_hp_fraction(),
                 "frames": self.knn_index.get_current_count(),
                 "deaths": self.died_count,
@@ -288,7 +292,7 @@ class ZeldsGymEnv(gym.Env):
 
     def update_frame_knn_index(self, frame_vec):
 
-        if self.get_levels_sum() >= 22 and not self.levels_satisfied:
+        if self.get_levels_sum() >= 750 and not self.levels_satisfied:
             self.levels_satisfied = True
             self.base_explore = self.knn_index.get_current_count()
             self.init_knn()
@@ -301,7 +305,7 @@ class ZeldsGymEnv(gym.Env):
         else:
             # check for nearest frame and add if current
             labels, distances = self.knn_index.knn_query(frame_vec, k=1)
-            if distances[0] > self.similar_frame_dist:
+            if distances[0] > self.sim_frame_dist:
                 self.knn_index.add_items(
                     frame_vec, np.array([self.knn_index.get_current_count()])
                 )
@@ -333,10 +337,10 @@ class ZeldsGymEnv(gym.Env):
         prog = self.progress_reward
         # these values are only used by memory
         return (
-            prog["level"] * 100,
+            prog["level"],
             self.read_hp_fraction() * 2000,
             prog["explore"] * 160,
-        )  # (prog['events'],
+        )  # ,
         # prog['levels'] + prog['party_xp'],
         # prog['explore'])
 
@@ -357,10 +361,10 @@ class ZeldsGymEnv(gym.Env):
             memory[col, row] = last_pixel * (255 // col_steps)
             return memory
 
-        level, hp, explore = self.group_rewards()
+        events, hp, explore = self.group_rewards()
         full_memory = np.stack(
             (
-                make_reward_channel(level),
+                make_reward_channel(events),
                 make_reward_channel(hp),
                 make_reward_channel(explore),
             ),
@@ -376,7 +380,7 @@ class ZeldsGymEnv(gym.Env):
         return rearrange(self.recent_memory, "(w h) c -> h w c", h=self.memory_height)
 
     def check_if_done(self):
-        if self.early_stopping:
+        if self.early_stop:
             done = False
             if self.step_count > 128 and self.recent_memory.sum() < (255 * 1):
                 done = True
@@ -393,16 +397,16 @@ class ZeldsGymEnv(gym.Env):
             prog_string += f" sum: {self.total_reward:5.2f}"
             print(f"\r{prog_string}", end="", flush=True)
 
-        if self.step_count % 50 == 0:
-            plt.imsave(
-                self.s_path / Path(f"curframe_{self.instance_id}.jpeg"),
-                self.render(reduce_res=False),
-            )
+        # if self.step_count % 50 == 0:
+        #     plt.imsave(
+        #         self.session_path / Path(f"curframe_{self.instance_id}.jpeg"),
+        #         self.render(reduce_res=False),
+        #     )
 
         if self.print_rewards and done:
             print("", flush=True)
             if self.save_final_state:
-                fs_path = self.s_path / Path("final_states")
+                fs_path = self.session_path / Path("final_states")
                 fs_path.mkdir(exist_ok=True)
                 plt.imsave(
                     fs_path
@@ -438,15 +442,17 @@ class ZeldsGymEnv(gym.Env):
     def read_m(self, addr):
         return self.pyboy.get_memory_value(addr)
 
-    def read_bit(self, addr, bit: int) -> bool:
-        # add padding so zero will read '0b100000000' instead of '0b0'
-        return (
-            bin(256 + self.read_m(addr))[-bit - 1] == "1"
-        )  # subtract starting pokemon level
+    def get_levels_sum(self):
+        shells = self.read_m(SECRET_SHELLS)
+        songs = self.read_m(OCARINA_SONGS) * 100
+        leaves = self.read_m(GOLDEN_LEAVES) * 10
+        max_health = self.read_m(MAX_HEALTH) * 3
+        level = shells + songs + leaves + max_health
+        return level  # add game progession items together
 
     def get_levels_reward(self):
-        explore_thresh = 22
-        scale_factor = 4
+        explore_thresh = 750
+        scale_factor = 1
         level_sum = self.get_levels_sum()
         if level_sum < explore_thresh:
             scaled = level_sum
@@ -490,49 +496,34 @@ class ZeldsGymEnv(gym.Env):
             0,
         )
 
-    def get_game_state_reward(self, print_stats=False):
+    def get_game_state_reward(self, print_stats=True):
         # addresses from https://datacrystal.tcrf.net/w/index.php?title=The_Legend_of_Zelda:_Link%27s_Awakening_(Game_Boy)/RAM_map&oldid=58985
-        # https://github.com/pret/pokered/blob/91dc3c9f9c8fd529bb6e8307b58b96efa0bec67e/constants/event_constants.asm
-        """
-        num_poke = self.read_m(0xD163)
-        poke_xps = [self.read_triple(a) for a in [0xD179, 0xD1A5, 0xD1D1, 0xD1FD, 0xD229, 0xD255]]
-        #money = self.read_money() - 975 # subtract starting money
-        seen_poke_count = sum([self.bit_count(self.read_m(i)) for i in range(0xD30A, 0xD31D)])
-        all_events_score = sum([self.bit_count(self.read_m(i)) for i in range(0xD747, 0xD886)])
-        oak_parcel = self.read_bit(0xD74E, 1)
-        oak_pokedex = self.read_bit(0xD74B, 5)
-        opponent_level = self.read_m(0xCFF3)
-        self.max_opponent_level = max(self.max_opponent_level, opponent_level)
-        enemy_poke_count = self.read_m(0xD89C)
-        self.max_opponent_poke = max(self.max_opponent_poke, enemy_poke_count)
+
+        level = self.get_levels_sum()
+        health = self.read_hp_fraction()
+        items = self.get_inventory()
+        instruments = self.get_instruments()
+        explore = self.get_knn_reward()
+        event = self.update_max_event_rew()
 
         if print_stats:
-            print(f'num_poke : {num_poke}')
-            print(f'poke_levels : {poke_levels}')
-            print(f'poke_xps : {poke_xps}')
-            #print(f'money: {money}')
-            print(f'seen_poke_count : {seen_poke_count}')
-            print(f'oak_parcel: {oak_parcel} oak_pokedex: {oak_pokedex} all_events_score: {all_events_score}')
-        """
+            print(
+                f" level : {level}| Health : {health}| items : {items}| instruments: {instruments}"
+            )
 
         state_scores = {
             "event": self.update_max_event_rew(),
-            #'party_xp': 0.1*sum(poke_xps),
             "level": self.get_levels_reward(),
             "heal": self.total_healing_rew,
-            "op_lvl": self.update_max_op_level(),
-            "dead": -0.1 * self.died_count,
-            "badge": self.get_badges() * 2,
-            #'op_poke': self.max_opponent_poke * 800,
-            #'money': money * 3,
-            #'seen_poke': seen_poke_count * 400,
+            "dead": -0.8 * self.died_count,
+            "instruments": self.get_instruments() * 100,
             "explore": self.get_knn_reward(),
         }
 
         return state_scores
 
     def save_screenshot(self, name):
-        ss_dir = self.s_path / Path("screenshots")
+        ss_dir = self.session_path / Path("screenshots")
         ss_dir.mkdir(exist_ok=True)
         plt.imsave(
             ss_dir
@@ -547,7 +538,23 @@ class ZeldsGymEnv(gym.Env):
         self.max_event_rew = max(cur_rew, self.max_event_rew)
         return self.max_event_rew
 
+    def read_hp_fraction(self):
+        hp_sum = self.read_m(HEALTH_LEVEL)
+        return hp_sum
+
+    def read_hp(self, start):
+        return 256 * self.read_m(start) + self.read_m(start + 1)
+
+    def bit_count(self, bits):
+        return bin(bits).count("1")
+
     def read_money(self):
         return 100 * 100 * self.read_bcd(
             self.read_m(RUPREE_ADDRESS_1)
         ) + 100 * self.read_bcd(self.read_m(RUPREE_ADDRESS_2))
+
+    def get_inventory(self):
+        bombs = self.read_m(NUM_BOMBS)
+        arrows = self.read_m(NUM_ARROWS)
+        items = bombs + arrows
+        return items

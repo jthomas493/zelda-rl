@@ -2,19 +2,19 @@ import uuid
 from pathlib import Path
 import ray
 from ray.rllib.algorithms import ppo
-from zelda_gym_env import ZeldsGymEnv
+from zelda_gym_env import ZeldaGymEnv
 
 ep_length = 2048  # 2048 * 8
 sess_path = Path(f"session_{str(uuid.uuid4())[:8]}")
 
 env_config = {
-    "headless": True,
+    "headless": False,
     "save_final_state": True,
     "early_stop": False,
     "action_freq": 24,
     "init_state": "../../has_sword.State",
     "max_steps": ep_length,
-    "print_rewards": False,
+    "print_rewards": True,
     "save_video": False,
     "fast_video": True,
     "session_path": sess_path,
@@ -37,9 +37,9 @@ ray.init(num_gpus=1)
 # Create the Algorithm from a config object.
 config = (
     ppo.PPOConfig()
-    .environment(ZeldsGymEnv, env_config=env_config)
+    .environment(ZeldaGymEnv, env_config=env_config)
     .framework("torch")
-    .resources(num_gpus=4)
+    .resources(num_gpus=1)
     .rollouts(num_rollout_workers=48)
     .training(
         model={
