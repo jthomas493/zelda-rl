@@ -12,6 +12,8 @@ venv*
 .python-version
 *.nes
 *.gb
+*.gbc
 Dockerfile
 *.pdf
-/reference
+/reference/*
+LAMemoryAddresses.txt
