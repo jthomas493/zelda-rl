@@ -29,24 +29,26 @@ class ZeldaGymEnv(gym.Env):
 
     def __init__(self, config=None):
 
-        self.headless = False
-        self.save_final_state = True
-        self.early_stop = False
-        self.action_freq = 30
-        self.init_state = config["init_state"]  # "./has_sword.state"
-        self.max_steps = 2048 * 8
-        self.print_rewards = True
-        self.save_video = False
-        self.fast_video = True
-        self.session_path = Path(f"session_{str(uuid.uuid4())[:8]}")
-        self.gb_path = "./Zelda.gb"
-        self.debug = False
-        self.sim_frame_dist = 2_000_000.0
-        self.use_screen_explore = True
-        self.extra_buttons = False
+        self.headless = config["headless"]
+        self.save_final_state = config["save_final_state"]
+        self.early_stop = config["early_stop"]
+        self.action_freq = config["action_freq"]
+        self.init_state = config["init_state"]
+        self.max_steps = config["max_steps"]
+        self.print_rewards = config["print_rewards"]
+        self.save_video = config["save_video"]
+        self.fast_video = config["fast_video"]
+        self.session_path = config["session_path"]
+        self.gb_path = config["gb_path"]
+        self.debug = config["debug"]
+        self.sim_frame_dist = config["sim_frame_dist"]
+        self.use_screen_explore = config["use_screen_explore"]
+        self.extra_buttons = config["extra_buttons"]
         self.vec_dim = 42 * 42 * 3  # 4320  # 1000 # must match output shape!!!
         self.num_elements = 20000
-
+        self.reward_scale = (
+            1 if "reward_scale" not in config else config["reward_scale"]
+        )
         self.video_interval = 256 * self.action_freq
         self.downsample_factor = 2
         self.frame_stacks = 3
@@ -123,7 +125,11 @@ class ZeldaGymEnv(gym.Env):
         with open(self.init_state, "rb") as f:
             self.pyboy.load_state(f)
 
-        self.init_knn()
+        if self.use_screen_explore:
+            self.init_knn()
+
+        else:
+            self.map_mem()
 
         self.recent_memory = np.zeros(
             (self.output_shape[1] * self.memory_height, 3), dtype=np.uint8
@@ -165,7 +171,7 @@ class ZeldaGymEnv(gym.Env):
         self.max_level_rew = 0
         self.last_health = 1
         self.total_healing_rew = 0
-        self.died_count = 0
+        self.died_count = self.read_m(NUM_DEATHS)
         self.step_count = 0
         self.progress_reward = self.get_game_state_reward()
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
@@ -181,6 +187,9 @@ class ZeldaGymEnv(gym.Env):
         self.knn_index.init_index(
             max_elements=self.num_elements, ef_construction=100, M=16
         )
+
+    def init_map_mem(self):
+        self.seen_coords = {}
 
     def render(self, reduce_res=True, add_memory=True, update_mem=True):
         game_pixels_render = self.screen.screen_ndarray()  # (144, 160, 3)
@@ -220,7 +229,10 @@ class ZeldaGymEnv(gym.Env):
         #    frame_start:frame_start+self.output_shape[0], ...].flatten().astype(np.float32)
         obs_flat = obs_memory.flatten().astype(np.float32)
 
-        self.update_frame_knn_index(obs_flat)
+        if self.use_screen_explore:
+            self.update_frame_knn_index(obs_flat)
+        else:
+            self.update_seen_coords
 
         self.update_heal_reward()
 
@@ -243,6 +255,7 @@ class ZeldaGymEnv(gym.Env):
         return obs_memory, new_reward * 0.1, done, done, {}
 
     def run_action_on_emulator(self, action):
+
         # press button then release after some steps
         self.pyboy.send_input(self.valid_actions[action])
         for i in range(self.action_freq):
@@ -309,6 +322,18 @@ class ZeldaGymEnv(gym.Env):
                 self.knn_index.add_items(
                     frame_vec, np.array([self.knn_index.get_current_count()])
                 )
+
+    def update_seen_coords(self):
+        x_pos = self.read_m(X_POS_ADDRESS)
+        y_pos = self.read_m(Y_POS_ADDRESS)
+        map_n = self.read_m(MAP_STATUS)
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        if self.get_levels_sum() >= 750 and not self.levels_satisfied:
+            self.levels_satisfied = True
+            self.base_explore = len(self.seen_coords)
+            self.seen_coords = {}
+
+        self.seen_coords[coord_string] = self.step_count
 
     def update_reward(self):
         # compute reward
@@ -394,7 +419,7 @@ class ZeldaGymEnv(gym.Env):
             prog_string = f"step: {self.step_count:6d}"
             for key, val in self.progress_reward.items():
                 prog_string += f" {key}: {val:5.2f}"
-            prog_string += f" sum: {self.total_reward:5.2f}"
+            prog_string += f" sum: {self.total_reward:5.2f}\n"
             print(f"\r{prog_string}", end="", flush=True)
 
         # if self.step_count % 50 == 0:
@@ -430,11 +455,11 @@ class ZeldaGymEnv(gym.Env):
         if done:
             self.all_runs.append(self.progress_reward)
             with open(
-                self.s_path / Path(f"all_runs_{self.instance_id}.json"), "w"
+                self.session_path / Path(f"all_runs_{self.instance_id}.json"), "w"
             ) as f:
                 json.dump(self.all_runs, f)
             pd.DataFrame(self.agent_stats).to_csv(
-                self.s_path / Path(f"agent_stats_{self.instance_id}.csv.gz"),
+                self.session_path / Path(f"agent_stats_{self.instance_id}.csv.gz"),
                 compression="gzip",
                 mode="a",
             )
@@ -464,10 +489,18 @@ class ZeldaGymEnv(gym.Env):
     def get_knn_reward(self):
         pre_rew = 0.004
         post_rew = 0.01
-        cur_size = self.knn_index.get_current_count()
+        cur_size = (
+            self.knn_index.get_current_count()
+            if self.use_screen_explore
+            else len(self.seen_coords)
+        )
         base = (self.base_explore if self.levels_satisfied else cur_size) * pre_rew
         post = (cur_size if self.levels_satisfied else 0) * post_rew
         return base + post
+
+    def get_fight_reward(self):
+        enemies = self.read_m(ENEMIES_KILLED)
+        return enemies
 
     def get_instruments(self):
         return self.bit_count(self.read_m(INSTUMENTS))
@@ -477,12 +510,12 @@ class ZeldaGymEnv(gym.Env):
         if cur_health > self.last_health:
             if self.last_health > 0:
                 heal_amount = cur_health - self.last_health
-                if heal_amount > 0.5:
+                if heal_amount > 0.25:
                     print(f"healed: {heal_amount}")
                     self.save_screenshot("healing")
                 self.total_healing_rew += heal_amount * 4
-            else:
-                self.died_count += 1
+            # else:
+            #     self.died_count += 1
 
     def get_all_events_reward(self):
         return max(
@@ -496,34 +529,33 @@ class ZeldaGymEnv(gym.Env):
             0,
         )
 
-    def get_game_state_reward(self, print_stats=True):
+    def get_game_state_reward(self):
         # addresses from https://datacrystal.tcrf.net/w/index.php?title=The_Legend_of_Zelda:_Link%27s_Awakening_(Game_Boy)/RAM_map&oldid=58985
 
-        level = self.get_levels_sum()
         health = self.read_hp_fraction()
-        items = self.get_inventory()
-        instruments = self.get_instruments()
         explore = self.get_knn_reward()
         event = self.update_max_event_rew()
+        enemies = self.get_fight_reward()
 
-        if print_stats:
+        if self.print_rewards:
             print(
-                f" level : {level}| Health : {health}| items : {items}| instruments: {instruments}"
+                f"Health : {health} | x_pos: {self.read_m(X_POS_ADDRESS)} | y_pos: {self.read_m(Y_POS_ADDRESS)}\n"
             )
 
         state_scores = {
-            "event": self.update_max_event_rew(),
-            "level": self.get_levels_reward(),
-            "heal": self.total_healing_rew,
-            "dead": -0.8 * self.died_count,
-            "instruments": self.get_instruments() * 100,
-            "explore": self.get_knn_reward(),
+            "event": self.reward_scale * event,
+            "level": self.reward_scale * self.get_levels_reward(),
+            "heal": self.reward_scale * self.total_healing_rew,
+            "dead": self.reward_scale * -0.8 * self.died_count,
+            "instruments": self.reward_scale * self.get_instruments() * 100,
+            "explore": self.reward_scale * explore,
+            "enemies": self.reward_scale * enemies,
         }
 
         return state_scores
 
     def save_screenshot(self, name):
-        ss_dir = self.session_path / Path("screenshots")
+        ss_dir = self.session_path / Path("screenshots/")
         ss_dir.mkdir(exist_ok=True)
         plt.imsave(
             ss_dir
@@ -542,16 +574,15 @@ class ZeldaGymEnv(gym.Env):
         hp_sum = self.read_m(HEALTH_LEVEL)
         return hp_sum
 
-    def read_hp(self, start):
-        return 256 * self.read_m(start) + self.read_m(start + 1)
+    def read_hp(self):
+        hp = self.read_m(HEALTH_LEVEL)
+        return hp
 
     def bit_count(self, bits):
         return bin(bits).count("1")
 
     def read_money(self):
-        return 100 * 100 * self.read_bcd(
-            self.read_m(RUPREE_ADDRESS_1)
-        ) + 100 * self.read_bcd(self.read_m(RUPREE_ADDRESS_2))
+        return self.read_m(RUPREE_ADDRESS_1)
 
     def get_inventory(self):
         bombs = self.read_m(NUM_BOMBS)
