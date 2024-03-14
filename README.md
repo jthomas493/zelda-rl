@@ -35,3 +35,5 @@ TODO: The reward function is a complicated work in progress.
 
 ####[gym=zelda-1](https://github.com/Kautenja/gym-zelda-1)
 ![alt text](https://user-images.githubusercontent.com/2184469/58208692-dae16580-7caa-11e9-82cf-2e870c681201.gif)
+
+####[Zelda1AI](https://github.com/bjotho/Zelda1AI)

@@ -1,6 +1,8 @@
 import sys
+import collections
 import uuid
 import os
+import math
 from math import floor, sqrt
 import json
 from pathlib import Path
@@ -96,6 +98,31 @@ class ZeldaGymEnv(gym.Env):
             self.output_shape[2],
         )
 
+        # Define the current objective.
+        self.objective = 0
+        # Define the highest reached objective for the current episode.
+        self.highest_objective = 0
+
+        # type of objective currently assigned
+        self.objective_type = collections.defaultdict(
+            lambda: None, {0: "Get to location", 1: "Kill enemies"}
+        )
+        self.objective_done = False
+
+        if not self.objective_done:
+            self.objective_list = [self.objective_type[0], X_DESTINATION, Y_DESTINATION]
+            self.objective_goals = []
+        else:
+            self.objective_list = [self.objective_type[1]]
+            self.objective_goals = []
+
+        # objectives completed
+        self.objective = 0
+
+        self.killed_enemy_count_last = 0
+        self.killed_enemy_count = self.read_m(ENEMIES_KILLED)
+        self.map_location = self.read_m(CURRENT_MAP)
+
         # Set these in ALL subclasses
         self.action_space = spaces.Discrete(len(self.valid_actions))
         self.observation_space = spaces.Box(
@@ -129,7 +156,7 @@ class ZeldaGymEnv(gym.Env):
             self.init_knn()
 
         else:
-            self.map_mem()
+            self.init_map_mem()
 
         self.recent_memory = np.zeros(
             (self.output_shape[1] * self.memory_height, 3), dtype=np.uint8
@@ -327,13 +354,107 @@ class ZeldaGymEnv(gym.Env):
         x_pos = self.read_m(X_POS_ADDRESS)
         y_pos = self.read_m(Y_POS_ADDRESS)
         map_n = self.read_m(MAP_STATUS)
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-        if self.get_levels_sum() >= 750 and not self.levels_satisfied:
-            self.levels_satisfied = True
-            self.base_explore = len(self.seen_coords)
-            self.seen_coords = {}
+        # coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        # if self.get_levels_sum() >= 750 and not self.levels_satisfied:
+        #     self.levels_satisfied = True
+        #     self.base_explore = len(self.seen_coords)
+        #     self.seen_coords = {}
 
-        self.seen_coords[coord_string] = self.step_count
+        # self.seen_coords[coord_string] = self.step_count
+
+    def get_target_distance(self, x_i=None, y_i=None):
+        """Returns the absolute distance between Link and the current target, or a specified target."""
+        if x_i == None:
+            x_i = self.objective_list[1]
+        if y_i == None:
+            y_i = self.objective_list[2]
+
+        return ((X_POS_ADDRESS - x_i) ** 2 + (Y_POS_ADDRESS - y_i) ** 2) ** 0.5
+
+    def check_objective_completed(self):
+        """Used to check whether the current objective has been completed."""
+
+        # function_name = ""
+        # if self.objective >= len(self.objective_goals):
+        #     function_name = "self._map_location"
+        # else:
+        #     function_name = self.objective_goals[self.objective]
+        # if function_name != "":
+        #     if eval(function_name) == self.objective_list[self.objective][-1]:
+        #         return True
+        # else:
+        if self.get_target_distance() < 1:
+            return True
+
+        return False
+
+    def objective_reward(self):
+        """Return the reward based on the progress towards the current objective."""
+        if self.objective_list[self.objective][0] == self.objective_type[0]:
+            if self.objective >= len(self.objective_list):
+                return 0
+
+            if self.check_objective_completed():
+                return self.objective_cleared()
+            else:
+                # if (
+                #     self.objective > 0
+                #     and self.objective_list[self.objective - 1][-2] == self.map_location
+                # ):
+                #     self.objective -= 1
+                #     return -10
+
+                # if self.map_location_penalty() < 0:
+                #     return 0
+
+                target_distance = self.get_target_distance()
+                _difference = target_distance - self.target_distance_last
+                _reward = 3 * math.atan(_difference)
+                self.target_distance_last = target_distance
+                if abs(_difference) > 10:
+                    return 0
+
+                return _reward
+
+        elif self.objective_list[self.objective][0] == self.objective_type[1]:
+            if self.objective_list[self.objective][-1] == self.killed_enemy_count:
+                return self.objective_cleared()
+            _closest_enemy_distance = 0
+            for i in range(self._objective_list[self._objective][-1]):
+                _function_name_x = "self._enemy_" + str(i + 1) + "_x_pixel"
+                _function_name_y = "self._enemy_" + str(i + 1) + "_y_pixel"
+                _enemy_distance = self._get_target_distance(
+                    eval(_function_name_x), eval(_function_name_y)
+                )
+                if _enemy_distance < _closest_enemy_distance:
+                    _closest_enemy_distance = _enemy_distance
+
+            _difference = self.closest_enemy_distance_last - _closest_enemy_distance
+            self.closest_enemy_distance_last = _closest_enemy_distance
+            if self.killed_enemy_count_last == self.killed_enemy_count:
+                return math.atan(_difference)
+
+            return 0
+
+    def objective_cleared(self):
+        """Return reward for a cleared objective."""
+        self.target_distance_last = self.get_target_distance()
+        self.objective += 1
+        self.highest_objective += 1
+        if self.objective == self.highest_objective:
+            print("Objective", self.objective, "completed!")
+
+        return 10
+
+    # def map_location_penalty(self):
+    #     if self.objective_list[-2] != self.map_location:
+    #         return -0.10
+
+    #     return 0
+
+    def distance_penalty(self):
+        _penalty = -self.get_target_distance() / 50
+        return _penalty
 
     def update_reward(self):
         # compute reward
@@ -498,9 +619,15 @@ class ZeldaGymEnv(gym.Env):
         post = (cur_size if self.levels_satisfied else 0) * post_rew
         return base + post
 
-    def get_fight_reward(self):
-        enemies = self.read_m(ENEMIES_KILLED)
-        return enemies
+    def kill_reward(self):
+        """Return the reward for slaying monsters."""
+
+        if self.killed_enemy_count < self.killed_enemy_count_last:
+            return 0
+
+        _reward = 10 * (self.killed_enemy_count - self.killed_enemy_count_last)
+        self.killed_enemy_count_last = self.killed_enemy_count
+        return _reward
 
     def get_instruments(self):
         return self.bit_count(self.read_m(INSTUMENTS))
@@ -535,7 +662,7 @@ class ZeldaGymEnv(gym.Env):
         health = self.read_hp_fraction()
         explore = self.get_knn_reward()
         event = self.update_max_event_rew()
-        enemies = self.get_fight_reward()
+        enemies = self.kill_reward()
 
         if self.print_rewards:
             print(
