@@ -17,3 +17,4 @@ Dockerfile
 *.pdf
 /reference/*
 LAMemoryAddresses.txt
+zelda_env.py
