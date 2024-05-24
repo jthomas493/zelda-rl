@@ -289,6 +289,7 @@ class ZeldaGymEnv(gym.Env):
                     self.pyboy.send_input(self.release_button[action - 4])
                 if action == WindowEvent.PRESS_BUTTON_START:
                     self.pyboy.send_input(WindowEvent.RELEASE_BUTTON_START)
+
             if self.save_video and not self.fast_video:
                 self.add_video_frame()
             self.pyboy.tick()
@@ -366,23 +367,6 @@ class ZeldaGymEnv(gym.Env):
         _target_distance = sqrt(_x_difference + _y_difference)
         return _target_distance
 
-    # def check_objective_completed(self):
-    #     """Used to check whether the current objective has been completed."""
-
-    #     # function_name = ""
-    #     # if self.objective >= len(self.objective_goals):
-    #     #     function_name = "self._map_location"
-    #     # else:
-    #     #     function_name = self.objective_goals[self.objective]
-    #     # if function_name != "":
-    #     #     if eval(function_name) == self.objective_list[self.objective][-1]:
-    #     #         return True
-    #     # else:
-    #     if self.get_target_distance() < 1:
-    #         return True
-
-    #     return False
-
     def get_objective_reward(self):
         """Return the reward based on the progress towards the current objective."""
         _target_distance = self.get_target_distance()
@@ -396,25 +380,20 @@ class ZeldaGymEnv(gym.Env):
             _steps += 50
             if self.distance_diffrence_last > _difference:
                 self.distance_diffrence_last = _difference
-                _reward -= -0.01
+                _reward = -1
             else:
-                _reward += 3 * math.atan(_difference)
+                _reward = 3 * math.atan(_difference)
 
         return _reward
 
-    # def objective_cleared(self):
-    #     """Return reward for a cleared objective."""
-    #     self.target_distance_last = self.get_target_distance()
-    #     self.objective += 1
-    #     self.highest_objective += 1
-    #     if self.objective == self.highest_objective:
-    #         print("Objective", self.objective, "completed!")
+    def objective_cleared(self):
+        """Return reward for a cleared objective."""
+        if self.get_target_distance() < 1:
+            self.objective += 1
+            self.highest_objective += 1
+            print("Objective", self.objective, "completed!")
 
-    #     return 10
-
-    # def distance_penalty(self):
-    #     _penalty = -self.get_target_distance() / 50
-    #     return _penalty
+        return 10
 
     def update_reward(self):
         # compute reward
@@ -436,6 +415,9 @@ class ZeldaGymEnv(gym.Env):
                 new_prog[0] - old_prog[0],
                 new_prog[1] - old_prog[1],
                 new_prog[2] - old_prog[2],
+                new_prog[3] - old_prog[3],
+                new_prog[4] - old_prog[4],
+                new_prog[5] - old_prog[5],
             ),
         )
 
@@ -444,8 +426,13 @@ class ZeldaGymEnv(gym.Env):
         # these values are only used by memory
         return (
             prog["level"],
-            self.read_hp_fraction() * 2000,
-            prog["explore"] * 160,
+            # self.read_hp_fraction() * 200,
+            prog["explore"] * 10,
+            # prog["health"],
+            prog["item_a"],
+            prog["item_b"],
+            prog["enemies"],
+            prog["dead"],
         )  # ,
         # prog['levels'] + prog['party_xp'],
         # prog['explore'])
@@ -552,8 +539,8 @@ class ZeldaGymEnv(gym.Env):
         shells = self.read_m(SECRET_SHELLS)
         songs = self.read_m(OCARINA_SONGS) * 100
         leaves = self.read_m(GOLDEN_LEAVES) * 10
-        max_health = self.read_m(MAX_HEALTH) * 3
-        level = shells + songs + leaves + max_health
+        # max_health = self.read_m(MAX_HEALTH) * 3
+        level = shells + songs + leaves  # + max_health
         return level  # add game progession items together
 
     def get_levels_reward(self):
@@ -612,20 +599,25 @@ class ZeldaGymEnv(gym.Env):
         event = self.update_max_event_rew()
         enemies = self.kill_reward()
         distance = self.get_target_distance()
+        A_ITEM = self.read_m(ITEM_A)
+        B_ITEM = self.read_m(ITEM_B)
 
         if self.print_rewards:
             print(
-                f"""Health: {health} | Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}\n| Distance: {distance} | Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)}\n"""
+                f"""Health: {health} | Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}\n| Distance: {distance} | Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)} |
+ITEM_A: {A_ITEM} | ITEM_B {B_ITEM}\n"""
             )
 
         state_scores = {
             "event": self.reward_scale * event,
             "level": self.reward_scale * self.get_levels_reward(),
-            # "health": self.health,
+            "health": health - 24,
             "dead": self.reward_scale * -0.8 * self.died_count,
             "instruments": self.reward_scale * self.get_instruments() * 100,
             "explore": self.reward_scale * explore,
             "enemies": self.reward_scale * enemies,
+            "item_a": self.reward_scale * A_ITEM,
+            "item_b": self.reward_scale * B_ITEM,
         }
 
         return state_scores

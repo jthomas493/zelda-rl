@@ -1,12 +1,24 @@
 from os.path import exists
 from pathlib import Path
 import uuid
+import os
+from newest_learning import newest_learning
 from zelda_gym_env import ZeldaGymEnv
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common import env_checker
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.callbacks import CheckpointCallback
+
+
+current_dir = os.getcwd()  # Get the current working directory
+newest_zip_path = newest_learning(current_dir)
+
+if newest_zip_path:
+    print(f"The most recent ZIP folder (including subdirectories): {newest_zip_path}")
+    # You can now use the zipfile module to access the ZIP content
+else:
+    print("No valid ZIP folders found in the current directory or its subdirectories.")
 
 
 def make_env(rank, env_conf, seed=0):
@@ -33,11 +45,11 @@ if __name__ == "__main__":
     sess_path = Path(f"session_{str(uuid.uuid4())[:8]}")
 
     env_config = {
-        "headless": False,
+        "headless": True,  # False,
         "save_final_state": True,
         "early_stop": False,
         "action_freq": 20,
-        "init_state": "./init.state",
+        "init_state": "./hasSword.state",
         "max_steps": ep_length,
         "print_rewards": True,
         "save_video": False,
@@ -58,14 +70,15 @@ if __name__ == "__main__":
         save_freq=ep_length, save_path=sess_path, name_prefix="zelda"
     )
     # env_checker.check_env(env)
-    learn_steps = 40
-    file_name = "session_e64a59b0\zelda_5000_steps.zip"
+    self_made_epochs = 10
+    file_name = newest_zip_path
 
-    if exists(file_name + ".zip"):
-        print("\nloading checkpoint")
+    if exists(file_name):
+        print("\nloading checkpoint " + file_name)
         model = PPO.load(file_name, env=env)
         model.n_steps = ep_length
         model.n_envs = num_cpu
+        model.gamma = 0.001
         model.rollout_buffer.buffer_size = ep_length
         model.rollout_buffer.n_envs = num_cpu
         model.rollout_buffer.reset()
@@ -77,9 +90,9 @@ if __name__ == "__main__":
             n_steps=ep_length,
             batch_size=512,
             n_epochs=1,
-            gamma=0.999,
+            gamma=0.0009,
             device="cuda",
         )
 
-    for i in range(learn_steps):
+    for i in range(self_made_epochs):
         model.learn(total_timesteps=(ep_length), callback=checkpoint_callback)
