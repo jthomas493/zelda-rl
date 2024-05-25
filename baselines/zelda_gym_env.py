@@ -426,16 +426,13 @@ class ZeldaGymEnv(gym.Env):
         # these values are only used by memory
         return (
             prog["level"],
-            # self.read_hp_fraction() * 200,
             prog["explore"] * 10,
             # prog["health"],
             prog["item_a"],
             prog["item_b"],
             prog["enemies"],
             prog["dead"],
-        )  # ,
-        # prog['levels'] + prog['party_xp'],
-        # prog['explore'])
+        )
 
     def create_exploration_memory(self):
         w = self.output_shape[1]
@@ -464,9 +461,6 @@ class ZeldaGymEnv(gym.Env):
             axis=-1,
         )
 
-        if self.get_badges() > 0:
-            full_memory[:, -1, :] = 255
-
         return full_memory
 
     def create_recent_memory(self):
@@ -489,12 +483,6 @@ class ZeldaGymEnv(gym.Env):
                 prog_string += f" {key}: {val:5.2f}"
             prog_string += f" sum: {self.total_reward:5.2f}\n"
             print(f"\r{prog_string}", end="", flush=True)
-
-        # if self.step_count % 50 == 0:
-        #     plt.imsave(
-        #         self.session_path / Path(f"curframe_{self.instance_id}.jpeg"),
-        #         self.render(reduce_res=False),
-        #     )
 
         if self.print_rewards and done:
             print("", flush=True)
@@ -556,7 +544,7 @@ class ZeldaGymEnv(gym.Env):
 
     def kill_reward(self):
         """Return the reward for slaying monsters."""
-
+        self.killed_enemy_count = self.read_m(ENEMIES_KILLED)
         if self.killed_enemy_count < self.killed_enemy_count_last:
             return 0
 

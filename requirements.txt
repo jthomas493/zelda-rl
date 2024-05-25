@@ -19,6 +19,7 @@ fonttools==4.40.0
 gym==0.26.2
 gym-notices==0.0.8
 gymnasium==0.28.1
+gym-zelda-1==0.2.2
 hnswlib==0.7.0
 imageio==2.31.1
 ipykernel==6.29.3
@@ -87,6 +88,7 @@ threadpoolctl==3.1.0
 tifffile==2023.4.12
 tinycss2==1.2.1
 torch==2.0.1
+torch==2.0.0+cu117 @ https://download.pytorch.org/whl/torch_stable.html
 tornado==6.3.3
 tqdm==4.65.0
 traitlets==5.9.0
@@ -95,4 +97,4 @@ tzdata==2023.3
 wandb==0.15.12
 wcwidth==0.2.6
 webencodings==0.5.1
-gym-zelda-1==0.2.2
+

@@ -10,8 +10,7 @@
    `pip install -r reqiuirements.txt`
    It may be necessary in some cases to separately install the SDL libraries.
 4. Run:  
-   TODO
-   `python run_pretrained_interactive.py`
+   `python run_baseline_parallel.py`
 
 ### Reward Function
 

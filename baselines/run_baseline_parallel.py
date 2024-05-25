@@ -16,7 +16,6 @@ newest_zip_path = newest_learning(current_dir)
 
 if newest_zip_path:
     print(f"The most recent ZIP folder (including subdirectories): {newest_zip_path}")
-    # You can now use the zipfile module to access the ZIP content
 else:
     print("No valid ZIP folders found in the current directory or its subdirectories.")
 
@@ -41,11 +40,11 @@ def make_env(rank, env_conf, seed=0):
 
 if __name__ == "__main__":
 
-    ep_length = 5000  # 2048 * 8
+    ep_length = 150000  # 2048 * 8
     sess_path = Path(f"session_{str(uuid.uuid4())[:8]}")
 
     env_config = {
-        "headless": True,  # False,
+        "headless": False,  # False, Presents a window
         "save_final_state": True,
         "early_stop": False,
         "action_freq": 20,
@@ -62,9 +61,9 @@ if __name__ == "__main__":
         "extra_buttons": False,
     }
 
-    num_cpu = 1  # 64 #46  # Also sets the number of episodes per training iteration
-    # env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
-    env = ZeldaGymEnv(env_config)
+    num_cpu = 6  # 64 #46  # Also sets the number of episodes per training iteration
+    env = SubprocVecEnv([make_env(i, env_config) for i in range(num_cpu)])
+    # env = ZeldaGymEnv(env_config)
 
     checkpoint_callback = CheckpointCallback(
         save_freq=ep_length, save_path=sess_path, name_prefix="zelda"
@@ -78,7 +77,8 @@ if __name__ == "__main__":
         model = PPO.load(file_name, env=env)
         model.n_steps = ep_length
         model.n_envs = num_cpu
-        model.gamma = 0.001
+        model.gamma = 0.01
+        model.device = "cuda"
         model.rollout_buffer.buffer_size = ep_length
         model.rollout_buffer.n_envs = num_cpu
         model.rollout_buffer.reset()
@@ -90,9 +90,13 @@ if __name__ == "__main__":
             n_steps=ep_length,
             batch_size=512,
             n_epochs=1,
-            gamma=0.0009,
+            gamma=0.001,
             device="cuda",
         )
 
     for i in range(self_made_epochs):
-        model.learn(total_timesteps=(ep_length), callback=checkpoint_callback)
+        model.learn(
+            total_timesteps=(ep_length),
+            callback=checkpoint_callback,
+        )
+        print(f"Finished {i + 1} of {self_made_epochs} epochs\n")
