@@ -348,13 +348,13 @@ class ZeldaGymEnv(gym.Env):
         x_pos = self.read_m(X_POS_ADDRESS)
         y_pos = self.read_m(Y_POS_ADDRESS)
         map_n = self.read_m(MAP_STATUS)
-        # coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-        # if self.get_levels_sum() >= 750 and not self.levels_satisfied:
-        #     self.levels_satisfied = True
-        #     self.base_explore = len(self.seen_coords)
-        #     self.seen_coords = {}
+        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
+        if self.get_levels_sum() >= 750 and not self.levels_satisfied:
+            self.levels_satisfied = True
+            self.base_explore = len(self.seen_coords)
+            self.seen_coords = {}
 
-        # self.seen_coords[coord_string] = self.step_count
+        self.seen_coords[coord_string] = self.step_count
 
     def get_target_distance(self):
         """Returns the absolute distance between Link and the current target, or a specified target."""
@@ -426,12 +426,11 @@ class ZeldaGymEnv(gym.Env):
         # these values are only used by memory
         return (
             prog["level"],
-            prog["explore"] * 10,
-            # prog["health"],
-            prog["item_a"],
-            prog["item_b"],
+            prog["explore"],
+            prog["objectives"],
             prog["enemies"],
-            prog["dead"],
+            prog["equipped"],
+            prog["died"],
         )
 
     def create_exploration_memory(self):
@@ -451,12 +450,15 @@ class ZeldaGymEnv(gym.Env):
             memory[col, row] = last_pixel * (255 // col_steps)
             return memory
 
-        events, hp, explore = self.group_rewards()
+        level, explore, objectives, enemies, equipped, died = self.group_rewards()
         full_memory = np.stack(
             (
-                make_reward_channel(events),
-                make_reward_channel(hp),
+                make_reward_channel(level),
                 make_reward_channel(explore),
+                make_reward_channel(objectives),
+                make_reward_channel(enemies),
+                make_reward_channel(equipped),
+                make_reward_channel(died),
             ),
             axis=-1,
         )
@@ -478,10 +480,10 @@ class ZeldaGymEnv(gym.Env):
 
     def save_and_print_info(self, done, obs_memory):
         if self.print_rewards:
-            prog_string = f"step: {self.step_count:6d}"
+            prog_string = f"| step | {self.step_count:6d} |\n"
             for key, val in self.progress_reward.items():
-                prog_string += f" {key}: {val:5.2f}"
-            prog_string += f" sum: {self.total_reward:5.2f}\n"
+                prog_string += f"| {key} | {val:5.2f} |\n"
+            prog_string += f"| sum | {self.total_reward:5.2f} |\n"
             print(f"\r{prog_string}", end="", flush=True)
 
         if self.print_rewards and done:
@@ -527,13 +529,13 @@ class ZeldaGymEnv(gym.Env):
         shells = self.read_m(SECRET_SHELLS)
         songs = self.read_m(OCARINA_SONGS) * 100
         leaves = self.read_m(GOLDEN_LEAVES) * 10
-        # max_health = self.read_m(MAX_HEALTH) * 3
-        level = shells + songs + leaves  # + max_health
+        max_health = self.read_m(MAX_HEALTH) - 3
+        level = shells + songs + leaves + max_health
         return level  # add game progession items together
 
     def get_levels_reward(self):
         explore_thresh = 750
-        scale_factor = 1
+        scale_factor = 4
         level_sum = self.get_levels_sum()
         if level_sum < explore_thresh:
             scaled = level_sum
@@ -541,6 +543,14 @@ class ZeldaGymEnv(gym.Env):
             scaled = (level_sum - explore_thresh) / scale_factor + explore_thresh
         self.max_level_rew = max(self.max_level_rew, scaled)
         return self.max_level_rew
+
+    def get_knn_reward(self):
+        pre_rew = 0.004
+        post_rew = 0.01
+        cur_size = self.knn_index.get_current_count()
+        base = (self.base_explore if self.levels_satisfied else cur_size) * pre_rew
+        post = (cur_size if self.levels_satisfied else 0) * post_rew
+        return base + post
 
     def kill_reward(self):
         """Return the reward for slaying monsters."""
@@ -583,29 +593,27 @@ class ZeldaGymEnv(gym.Env):
         # addresses from https://datacrystal.tcrf.net/w/index.php?title=The_Legend_of_Zelda:_Link%27s_Awakening_(Game_Boy)/RAM_map&oldid=58985
 
         health = self.read_hp_fraction()
-        explore = self.get_objective_reward()
+        explore = self.get_knn_reward()
+        objectives = self.get_objective_reward()
         event = self.update_max_event_rew()
         enemies = self.kill_reward()
         distance = self.get_target_distance()
-        A_ITEM = self.read_m(ITEM_A)
-        B_ITEM = self.read_m(ITEM_B)
+        equipped = self.get_equipped_items()
 
         if self.print_rewards:
             print(
-                f"""Health: {health} | Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}\n| Distance: {distance} | Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)} |
-ITEM_A: {A_ITEM} | ITEM_B {B_ITEM}\n"""
+                f"""| Health: {health} |\n| Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}|\n| Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)} |\n| Distance: {distance} |\n"""
             )
 
         state_scores = {
-            "event": self.reward_scale * event,
-            "level": self.reward_scale * self.get_levels_reward(),
-            "health": health - 24,
-            "dead": self.reward_scale * -0.8 * self.died_count,
-            "instruments": self.reward_scale * self.get_instruments() * 100,
-            "explore": self.reward_scale * explore,
-            "enemies": self.reward_scale * enemies,
-            "item_a": self.reward_scale * A_ITEM,
-            "item_b": self.reward_scale * B_ITEM,
+            "event": event,
+            "level": self.get_levels_reward(),
+            "died": self.died_count * -0.8,
+            "instruments": self.get_instruments() * 100,
+            "explore": explore,
+            "enemies": enemies,
+            "objectives": objectives,
+            "equipped": equipped,
         }
 
         return state_scores
@@ -645,3 +653,16 @@ ITEM_A: {A_ITEM} | ITEM_B {B_ITEM}\n"""
         arrows = self.read_m(NUM_ARROWS)
         items = bombs + arrows
         return items
+
+    def get_equipped_items(self):
+        A_ITEM = self.read_m(ITEM_A)
+        B_ITEM = self.read_m(ITEM_B)
+
+        if A_ITEM and B_ITEM == 0:
+            return -5
+        elif A_ITEM == 0:
+            return -2
+        elif B_ITEM == 0:
+            return -2
+        else:
+            return 0
