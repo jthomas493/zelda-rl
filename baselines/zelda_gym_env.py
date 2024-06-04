@@ -46,7 +46,7 @@ class ZeldaGymEnv(gym.Env):
         self.sim_frame_dist = config["sim_frame_dist"]
         self.use_screen_explore = config["use_screen_explore"]
         self.extra_buttons = config["extra_buttons"]
-        self.vec_dim = 42 * 42 * 3  # 4320  # 1000 # must match output shape!!!
+        self.vec_dim = 42 * 42 * 3  # must match output shape!!!
         self.num_elements = 20000
         self.reward_scale = (
             1 if "reward_scale" not in config else config["reward_scale"]
@@ -87,7 +87,7 @@ class ZeldaGymEnv(gym.Env):
             WindowEvent.RELEASE_BUTTON_B,
         ]
 
-        self.output_shape = (42, 42, 3)  # (36, 40, 3) # must match vec_dim!!!
+        self.output_shape = (42, 42, 3)  # must match vec_dim!!!
         self.mem_padding = 2
         self.memory_height = 8
         self.col_steps = 16
@@ -115,6 +115,8 @@ class ZeldaGymEnv(gym.Env):
         self.map_location = 0
         self.target_distance_last = 0
         self.distance_diffrence_last = 0
+        self.objective_steps = 200
+        self.objective_distance_reward = 0
 
         # Set these in ALL subclasses
         self.action_space = spaces.Discrete(len(self.valid_actions))
@@ -130,8 +132,8 @@ class ZeldaGymEnv(gym.Env):
             debugging=False,
             disable_input=False,
             window_type=head,
-            hide_window=True,
-            simultaneous_actions=True,  #'--quiet' in sys.argv,
+            hide_window="--quiet" in sys.argv,
+            simultaneous_actions=True,
         )
 
         self.screen = self.pyboy.botsupport_manager().screen()
@@ -169,7 +171,7 @@ class ZeldaGymEnv(gym.Env):
 
         if self.save_video:
             base_dir = self.session_path / Path("rollouts")
-            base_dir.mkdir(exist_ok=True)
+            os.makedirs(base_dir, exist_ok=True)
             full_name = Path(
                 f"full_reset_{self.reset_count}_id{self.instance_id}"
             ).with_suffix(".mp4")
@@ -211,7 +213,7 @@ class ZeldaGymEnv(gym.Env):
     def init_map_mem(self):
         self.seen_coords = {}
 
-    def render(self, reduce_res=True, add_memory=True, update_mem=True):
+    def render(self, reduce_res=True, add_memory=False, update_mem=False):
         game_pixels_render = self.screen.screen_ndarray()  # (144, 160, 3)
         if reduce_res:
             game_pixels_render = (
@@ -370,20 +372,31 @@ class ZeldaGymEnv(gym.Env):
     def get_objective_reward(self):
         """Return the reward based on the progress towards the current objective."""
         _target_distance = self.get_target_distance()
+        _distance_history = []
         _difference = abs(self.target_distance_last - _target_distance)
         self.target_distance_last = _target_distance
         progress = self.step_count
-        _steps = 150
-        _reward = 0
+        _steps = self.objective_steps
+        _reward = self.objective_distance_reward
+        # check if distance history is empty
+        _distance_history.append(_target_distance)
+        _distance_history.sort()
+        _distance_history = _distance_history[:10]
+        # save the closest target distance
+        _closest_distance = _distance_history[0]
         # reduce reward if bot has not made progress
         if progress > _steps:
-            _steps += 50
-            if self.distance_diffrence_last > _difference:
-                self.distance_diffrence_last = _difference
-                _reward = -1
+            self.objective_steps += 10
+            if _target_distance < _closest_distance:
+                _distance_history.append(_target_distance)
+                # if self.distance_diffrence_last > _difference:
+                #     self.distance_diffrence_last = _difference
+                self.objective_distance_reward += 10 * math.atan(_difference)
+                _reward = self.objective_distance_reward
             else:
-                _reward = 3 * math.atan(_difference)
-
+                _distance_history.append(_target_distance)
+                self.objective_distance_reward += 0  # 3 * math.atan(_difference)
+                _reward = self.objective_distance_reward
         return _reward
 
     def objective_cleared(self):
@@ -392,8 +405,11 @@ class ZeldaGymEnv(gym.Env):
             self.objective += 1
             self.highest_objective += 1
             print("Objective", self.objective, "completed!")
+            self.save_screenshot("objective_reached")
 
-        return 10
+            return 100
+        else:
+            return 0
 
     def update_reward(self):
         # compute reward
@@ -418,6 +434,7 @@ class ZeldaGymEnv(gym.Env):
                 new_prog[3] - old_prog[3],
                 new_prog[4] - old_prog[4],
                 new_prog[5] - old_prog[5],
+                new_prog[6] - old_prog[6],
             ),
         )
 
@@ -427,7 +444,8 @@ class ZeldaGymEnv(gym.Env):
         return (
             prog["level"],
             prog["explore"],
-            prog["objectives"],
+            prog["navigation"],
+            prog["objective"],
             prog["enemies"],
             prog["equipped"],
             prog["died"],
@@ -450,12 +468,15 @@ class ZeldaGymEnv(gym.Env):
             memory[col, row] = last_pixel * (255 // col_steps)
             return memory
 
-        level, explore, objectives, enemies, equipped, died = self.group_rewards()
+        level, explore, navigation, objective, enemies, equipped, died = (
+            self.group_rewards()
+        )
         full_memory = np.stack(
             (
                 make_reward_channel(level),
                 make_reward_channel(explore),
-                make_reward_channel(objectives),
+                make_reward_channel(navigation),
+                make_reward_channel(objective),
                 make_reward_channel(enemies),
                 make_reward_channel(equipped),
                 make_reward_channel(died),
@@ -529,7 +550,7 @@ class ZeldaGymEnv(gym.Env):
         shells = self.read_m(SECRET_SHELLS)
         songs = self.read_m(OCARINA_SONGS) * 100
         leaves = self.read_m(GOLDEN_LEAVES) * 10
-        max_health = self.read_m(MAX_HEALTH) - 3
+        max_health = self.read_m(MAX_HEALTH)
         level = shells + songs + leaves + max_health
         return level  # add game progession items together
 
@@ -555,12 +576,14 @@ class ZeldaGymEnv(gym.Env):
     def kill_reward(self):
         """Return the reward for slaying monsters."""
         self.killed_enemy_count = self.read_m(ENEMIES_KILLED)
-        if self.killed_enemy_count < self.killed_enemy_count_last:
-            return 0
 
-        _reward = 10 * (self.killed_enemy_count - self.killed_enemy_count_last)
-        self.killed_enemy_count_last = self.killed_enemy_count
-        return _reward
+        if self.killed_enemy_count > 0 and self.killed_enemy_count_last > 0:
+            _reward = 10 * (self.killed_enemy_count - self.killed_enemy_count_last)
+            self.killed_enemy_count_last = self.killed_enemy_count
+            self.save_screenshot("kill_reward")
+            return _reward
+
+        return 0
 
     def get_instruments(self):
         return self.bit_count(self.read_m(INSTUMENTS))
@@ -594,11 +617,12 @@ class ZeldaGymEnv(gym.Env):
 
         health = self.read_hp_fraction()
         explore = self.get_knn_reward()
-        objectives = self.get_objective_reward()
+        navigation = self.get_objective_reward()
         event = self.update_max_event_rew()
         enemies = self.kill_reward()
         distance = self.get_target_distance()
         equipped = self.get_equipped_items()
+        objectives = self.objective_cleared()
 
         if self.print_rewards:
             print(
@@ -608,11 +632,12 @@ class ZeldaGymEnv(gym.Env):
         state_scores = {
             "event": event,
             "level": self.get_levels_reward(),
-            "died": self.died_count * -0.8,
+            "died": self.died_count * -50,
             "instruments": self.get_instruments() * 100,
             "explore": explore,
             "enemies": enemies,
-            "objectives": objectives,
+            "navigation": navigation,
+            "objective": objectives,
             "equipped": equipped,
         }
 

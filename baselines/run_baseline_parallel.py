@@ -40,14 +40,14 @@ def make_env(rank, env_conf, seed=0):
 
 if __name__ == "__main__":
 
-    ep_length = 5000  # 2048 * 8
+    ep_length = 50000  # 2048 * 8
     sess_path = Path(f"session_{str(uuid.uuid4())[:8]}")
 
     env_config = {
-        "headless": True,  # False Presents a window
+        "headless": False,  # False Presents a window
         "save_final_state": True,
         "early_stop": False,
-        "action_freq": 24,
+        "action_freq": 20,
         "init_state": "./hasSword.state",
         "max_steps": ep_length,
         "print_rewards": True,
@@ -72,15 +72,15 @@ if __name__ == "__main__":
         name_prefix="zelda",
     )
     # env_checker.check_env(env)
-    self_made_epochs = 500
+    self_made_epochs = 50
     file_name = newest_zip_path
 
     if exists(file_name):
         print("\nloading checkpoint " + file_name)
-        model = PPO.load(file_name, env=env, n_epochs=3)
+        model = PPO.load(file_name, env=env)
         model.n_steps = ep_length
         model.n_envs = num_cpu
-        model.gamma = 0.998
+        model.gamma = 0.95
         model.device = "cuda"
         model.rollout_buffer.buffer_size = ep_length
         model.rollout_buffer.n_envs = num_cpu
@@ -91,9 +91,9 @@ if __name__ == "__main__":
             env,
             verbose=1,
             n_steps=ep_length,
-            batch_size=512,
-            n_epochs=3,
-            gamma=0.998,
+            batch_size=128,
+            n_epochs=1,
+            gamma=0.95,
             device="cuda",
         )
 
