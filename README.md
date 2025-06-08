@@ -55,21 +55,52 @@ The `ZeldaGymEnv` uses a `gymnasium.spaces.Dict` to provide observations to the 
 
 ## Reward Function
 
-TODO: The reward function is a complicated work in progress. It is designed to encourage:
+The reward function in this environment is meticulously designed to guide Link through The Legend of Zelda: Link's Awakening by incentivizing various forms of progress and desired behaviors. It's a composite reward system that combines multiple metrics to provide a comprehensive signal to the reinforcement learning agent.
 
-* **Exploration:** Rewarding the agent for visiting new areas or states.
-* **Progress:** Rewarding the agent for advancing in the game, completing objectives, and collecting items.
-* **Survival:** Penalizing the agent for taking damage or dying.
+**Key Reward Components:**
+
+The total reward is an aggregation of scores from several distinct categories, calculated at each step:
+
+* **`event`**: Rewards for triggering various in-game events and flag progressions.
+* **`level`**: Incentivizes collection of progression items (e.g., secret shells, ocarina songs, golden leaves, max health upgrades).
+* **`died`**: A significant negative penalty incurred upon Link's death.
+* **`instruments`**: Rewards for collecting the eight magical instruments required to awaken the Wind Fish.
+* **`explore`**: Encourages exploration of new areas/screens, either via screen-based k-NN similarity or visited map coordinates.
+* **`enemies`**: Rewards for defeating enemies.
+* **`navigation`**: Provides positive feedback for moving closer to the current objective's target coordinates.
+* **`objectives`**: A large positive reward for completing major in-game objectives or reaching specific key locations.
+* **`equipped`**: A small penalty for having no items equipped in both A and B slots, encouraging active use of the inventory.
+
+**Per-Step Reward Mechanism (Delta-Based):**
+
+It's crucial to understand how the per-step reward (the value returned to the agent) is calculated. Internally, the environment maintains a cumulative score for each of the reward components listed above. However, the actual reward signal given to the agent for any given timestep is the **difference (delta)** between the *current total cumulative reward* and the *total cumulative reward from the previous step*.
+
+This delta-based approach ensures that the agent is primarily rewarded for **making new progress** in that specific step, rather than simply for being in a good state that it already achieved. If no progress is made in a certain category during a step, its contribution to the per-step reward will be zero.
+
+**Observation (`memory_values`) vs. Reward:**
+
+It's important to differentiate between the agent's observation space and the reward function. The `memory_values` provided as part of the observation (e.g., player coordinates, health, item counts, objective coordinates) are **inputs** for the agent's decision-making process. They allow the agent to "see" and understand the current game state.
+
+These `memory_values` themselves **do not directly contribute to the reward signal**. The reward is calculated separately based on *changes* in the game state that these memory values represent, or upon reaching specific objectives/milestones. There is no "double-counting" or accidental reward for simply observing certain memory values.
+
+**Detailed Logging for Insight:**
+
+For better monitoring and debugging of the learning process, the environment now provides detailed reward information in the `info` dictionary returned by the `step` function. This includes:
+
+* **`reward_deltas`**: A breakdown of the individual changes contributed by each reward component for the current step.
+* **`current_cumulative_rewards`**: The total accumulated score for each reward component up to the current step.
+
+This `info` dictionary is also printed to the console periodically (e.g., every 1000 steps) to give a clear snapshot of the agent's progress across all reward streams.
 
 ## Supporting Libraries
 
 ### [Stable Baselines 3](https://github.com/DLR-RM/stable-baselines3)
 
-[![Stable Baselines 3 Logo](https://youtu.be/DcYLT37ImBY)](https://github.com/DLR-RM/stable-baselines3)
+![alt text](https://github.com/DLR-RM/stable-baselines3/raw/master/docs//_static/img/logo.png)
 
 ### [PyBoy](https://github.com/Baekalfen/PyBoy)
 
-[![PyBoy Logo](https://youtu.be/DcYLT37ImBY)](https://github.com/Baekalfen/PyBoy)
+![alt text](https://github.com/Baekalfen/PyBoy/raw/master/extras/README/pyboy.svg)
 
 ### References
 
@@ -79,4 +110,5 @@ TODO: The reward function is a complicated work in progress. It is designed to e
 ### Inspired By
 
 * [gym-zelda-1](https://github.com/Kautenja/gym-zelda-1)
+![alt text](https://user-images.githubusercontent.com/2184469/58208692-dae16580-7caa-11e9-82cf-2e870c681201.gif)
 * [Zelda1AI](https://github.com/bjotho/Zelda1AI)
