@@ -13,8 +13,12 @@ venv*
 *.nes
 *.gb
 *.gbc
+*.gba
+*.State
 Dockerfile
 *.pdf
 /reference/*
 LAMemoryAddresses.txt
 zelda_env.py
+page.txt
+/logs/*

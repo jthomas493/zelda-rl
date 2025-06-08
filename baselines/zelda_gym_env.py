@@ -46,7 +46,15 @@ class ZeldaGymEnv(gym.Env):
         self.sim_frame_dist = config["sim_frame_dist"]
         self.use_screen_explore = config["use_screen_explore"]
         self.extra_buttons = config["extra_buttons"]
-        self.vec_dim = 42 * 42 * 3  # must match output shape!!!
+
+        self.pixel_output_shape = (42, 42, 3)  # must match vec_dim!!!
+        # this number matches how many memory addresses you want to track
+        self.num_memory_features = 13
+        self.vec_dim = (
+            self.pixel_output_shape[0]
+            * self.pixel_output_shape[1]
+            * self.pixel_output_shape[2]
+        )  # must match output shape!!!
         self.num_elements = 20000
         self.reward_scale = (
             1 if "reward_scale" not in config else config["reward_scale"]
@@ -62,7 +70,7 @@ class ZeldaGymEnv(gym.Env):
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
-        self.reward_range = (0, 15000)
+        self.reward_range = (0, 500000)
 
         self.valid_actions = [
             WindowEvent.PRESS_ARROW_DOWN,
@@ -71,7 +79,7 @@ class ZeldaGymEnv(gym.Env):
             WindowEvent.PRESS_ARROW_UP,
             WindowEvent.PRESS_BUTTON_A,
             WindowEvent.PRESS_BUTTON_B,
-            WindowEvent.PRESS_BUTTON_START,
+            # WindowEvent.PRESS_BUTTON_START,
             WindowEvent.PASS,
         ]
 
@@ -87,15 +95,14 @@ class ZeldaGymEnv(gym.Env):
             WindowEvent.RELEASE_BUTTON_B,
         ]
 
-        self.output_shape = (42, 42, 3)  # must match vec_dim!!!
         self.mem_padding = 2
         self.memory_height = 8
         self.col_steps = 16
         self.output_full = (
-            self.output_shape[0] * self.frame_stacks
+            self.pixel_output_shape[0] * self.frame_stacks
             + 2 * (self.mem_padding + self.memory_height),
-            self.output_shape[1],
-            self.output_shape[2],
+            self.pixel_output_shape[1],
+            self.pixel_output_shape[2],
         )
 
         # Define the current objective.
@@ -110,6 +117,9 @@ class ZeldaGymEnv(gym.Env):
         # objectives completed
         self.objective_completed = 0
 
+        # objective completion reward
+        self.objective_reward = 0
+
         self.killed_enemy_count_last = 0
         self.killed_enemy_count = 0
         self.map_location = 0
@@ -117,12 +127,28 @@ class ZeldaGymEnv(gym.Env):
         self.distance_diffrence_last = 0
         self.objective_steps = 200
         self.objective_distance_reward = 0
+        self.total_reward = 0
 
         # Set these in ALL subclasses
         self.action_space = spaces.Discrete(len(self.valid_actions))
-        self.observation_space = spaces.Box(
-            low=0, high=255, shape=self.output_shape, dtype=np.uint8
+        # added observation_space dict
+        self.observation_space = spaces.Dict(
+            {
+                "pixels": spaces.Box(
+                    low=0, high=255, shape=self.pixel_output_shape, dtype=np.uint8
+                ),
+                "memory_values": spaces.Box(
+                    low=0.0,
+                    high=1.0,
+                    shape=(self.num_memory_features,),
+                    dtype=np.float32,
+                ),
+            }
         )
+
+        # self.observation_space = spaces.Box(
+        #     low=0, high=255, shape=self.pixel_output_shape, dtype=np.uint8
+        # )
         # self.observation_space = spaces.Box(low=0, high=255, shape=self.output_full, dtype=np.uint8)
 
         head = "headless" if self.headless else "SDL2"
@@ -154,15 +180,15 @@ class ZeldaGymEnv(gym.Env):
             self.init_map_mem()
 
         self.recent_memory = np.zeros(
-            (self.output_shape[1] * self.memory_height, 3), dtype=np.uint8
+            (self.pixel_output_shape[1] * self.memory_height, 3), dtype=np.uint8
         )
 
         self.recent_frames = np.zeros(
             (
                 self.frame_stacks,
-                self.output_shape[0],
-                self.output_shape[1],
-                self.output_shape[2],
+                self.pixel_output_shape[0],
+                self.pixel_output_shape[1],
+                self.pixel_output_shape[2],
             ),
             dtype=np.uint8,
         )
@@ -170,7 +196,7 @@ class ZeldaGymEnv(gym.Env):
         self.agent_stats = []
 
         if self.save_video:
-            base_dir = self.session_path / Path("rollouts")
+            base_dir = Path(self.session_path / "rollouts")
             os.makedirs(base_dir, exist_ok=True)
             full_name = Path(
                 f"full_reset_{self.reset_count}_id{self.instance_id}"
@@ -196,9 +222,13 @@ class ZeldaGymEnv(gym.Env):
         self.died_count = self.read_m(NUM_DEATHS)
         self.step_count = 0
         self.progress_reward = self.get_game_state_reward()
-        self.total_reward = sum([val for _, val in self.progress_reward.items()])
+        self.total_reward = 0  # sum([val for _, val in self.progress_reward.items()])
         self.reset_count += 1
-        return self.render(add_memory=False), {}
+        obs_pixels = self.render(add_memory=False)
+        obs_memory_values = (
+            self.get_normalized_memory_vector()
+        )  # Call this to get the initial memory state
+        return ({"pixels": obs_pixels, "memory_values": obs_memory_values}, {})
 
     def init_knn(self):
         # Declaring index
@@ -217,13 +247,14 @@ class ZeldaGymEnv(gym.Env):
         game_pixels_render = self.screen.screen_ndarray()  # (144, 160, 3)
         if reduce_res:
             game_pixels_render = (
-                255 * resize(game_pixels_render, self.output_shape)
+                255 * resize(game_pixels_render, self.pixel_output_shape)
             ).astype(np.uint8)
             if update_mem:
                 self.recent_frames[0] = game_pixels_render
             if add_memory:
                 pad = np.zeros(
-                    shape=(self.mem_padding, self.output_shape[1], 3), dtype=np.uint8
+                    shape=(self.mem_padding, self.pixel_output_shape[1], 3),
+                    dtype=np.uint8,
                 )
                 game_pixels_render = np.concatenate(
                     (
@@ -243,22 +274,20 @@ class ZeldaGymEnv(gym.Env):
         self.append_agent_stats()
 
         self.recent_frames = np.roll(self.recent_frames, 1, axis=0)
-        obs_memory = self.render(add_memory=False)
+        obs_pixels = self.render(add_memory=False)
 
-        # trim off memory from frame for knn index
-        # frame_start = 2 * (self.memory_height + self.mem_padding)
-        # obs_flat = obs_memory[
-        #    frame_start:frame_start+self.output_shape[0], ...].flatten().astype(np.float32)
-        obs_flat = obs_memory.flatten().astype(np.float32)
+        obs_memory_values = self.get_normalized_memory_vector()
+
+        obs_flat = obs_pixels.flatten().astype(np.float32)
 
         if self.use_screen_explore:
             self.update_frame_knn_index(obs_flat)
         else:
-            self.update_seen_coords
+            self.update_seen_coords()
 
         self.update_heal_reward()
 
-        new_reward, new_prog = self.update_reward()
+        reward, new_prog = self.update_reward()
 
         self.last_health = self.read_hp_fraction()
 
@@ -268,13 +297,84 @@ class ZeldaGymEnv(gym.Env):
         self.recent_memory[0, 1] = min(new_prog[1] * 64, 255)
         self.recent_memory[0, 2] = min(new_prog[2] * 128, 255)
 
-        done = self.check_if_done()
+        terminated, truncated = self.check_if_done()
 
-        self.save_and_print_info(done, obs_memory)
+        self.save_and_print_info(terminated or truncated, obs_pixels)
 
         self.step_count += 1
 
-        return obs_memory, new_reward * 0.1, done, done, {}
+        info = {
+            "reward_deltas": {
+                "level": new_prog[0],
+                "explore": new_prog[1],
+                "navigation": new_prog[2],
+                "objectives": new_prog[3],
+                "enemies": new_prog[4],
+                "equipped": new_prog[5],
+                "died": new_prog[6],
+            },
+            "current_cumulative_rewards": self.progress_reward,  # You might want to also return the full dict of current cumulative scores
+        }
+
+        if self.step_count % 1000 == 0:
+            print(f"\n--- Step {self.step_count} Info ---")
+            print(f"Total Step Reward: {reward:.4f}")
+            print("Individual Deltas:")
+            for key, value in info["reward_deltas"].items():
+                print(f"  {key}: {value:.4f}")
+            print("Current Cumulative Rewards:")
+            for key, value in info["current_cumulative_rewards"].items():
+                print(f"  {key}: {value:.4f}")
+            print("---------------------------\n")
+
+        return (
+            {"pixels": obs_pixels, "memory_values": obs_memory_values},
+            reward,
+            terminated,
+            truncated,
+            info,
+        )
+
+    def get_normalized_memory_vector(self):
+        # Initialize an empty list to hold your normalized memory values
+        mem_vec = []
+
+        # Player position max X=160, max Y=128 for map boundary
+        mem_vec.append(self.read_m(X_POS_ADDRESS) / 160.0)
+        mem_vec.append(self.read_m(Y_POS_ADDRESS) / 128.0)
+
+        # Health (normalized by MAX_HEALTH)
+        current_hp = self.read_m(HEALTH_LEVEL)
+        max_hp_val = self.read_m(MAX_HEALTH)  # Or use a known max like 255 if fixed
+        mem_vec.append(current_hp / max_hp_val if max_hp_val > 0 else 0.0)
+
+        # Map/Room (normalized)
+        mem_vec.append(self.read_m(MAP_STATUS) / 90.0)
+        mem_vec.append(
+            self.read_m(ROOM_NUMBER) / 255.0
+        )  # Assuming max room number is 255
+
+        # Item counts normalized by max capacity
+        mem_vec.append(self.read_m(NUM_BOMBS) / 60.0)  # max 60 bombs
+        mem_vec.append(self.read_m(NUM_ARROWS) / 60.0)  # max 60 arrows
+
+        # # Sword/Shield Level (normalize by max level, e.g., 3 for sword)
+        mem_vec.append(self.read_m(SWORD_LEVEL) / 3.0)
+        mem_vec.append(self.read_m(SHIELD_LEVEL) / 3.0)
+
+        # Objective Coordinates
+        mem_vec.append(self.read_m(X_DESTINATION) / 160.0)
+        mem_vec.append(self.read_m(Y_DESTINATION) / 128.0)
+
+        # Instruments (bit count, then normalize) Max 8 instruments
+        mem_vec.append(self.bit_count(self.read_m(INSTUMENTS)) / 8.0)
+
+        # total number of shells
+        mem_vec.append(self.read_m(SECRET_SHELLS) / 20.0)
+
+        # adjust self.num_memory_features to match number of appends.
+
+        return np.array(mem_vec, dtype=np.float32)
 
     def run_action_on_emulator(self, action):
 
@@ -391,25 +491,29 @@ class ZeldaGymEnv(gym.Env):
                 _distance_history.append(_target_distance)
                 # if self.distance_diffrence_last > _difference:
                 #     self.distance_diffrence_last = _difference
-                self.objective_distance_reward += 10 * math.atan(_difference)
+                # make the distance reward large
+                self.objective_distance_reward += 10 * _difference
                 _reward = self.objective_distance_reward
             else:
                 _distance_history.append(_target_distance)
                 self.objective_distance_reward += 0  # 3 * math.atan(_difference)
-                _reward = self.objective_distance_reward
+                _reward += self.objective_distance_reward
         return _reward
 
     def objective_cleared(self):
         """Return reward for a cleared objective."""
-        if self.get_target_distance() < 1:
+        _reward = self.objective_reward
+        if self.get_target_distance() < 1 and self.objective_completed > 1:
             self.objective += 1
             self.highest_objective += 1
             print("Objective", self.objective, "completed!")
             self.save_screenshot("objective_reached")
-
-            return 100
+            self.objective_reward += 1000
+            _reward += self.objective_reward
         else:
-            return 0
+            _reward += 0
+
+        return _reward
 
     def update_reward(self):
         # compute reward
@@ -426,7 +530,7 @@ class ZeldaGymEnv(gym.Env):
 
         self.total_reward = new_total
         return (
-            new_step,
+            new_step * self.reward_scale,
             (
                 new_prog[0] - old_prog[0],
                 new_prog[1] - old_prog[1],
@@ -445,14 +549,14 @@ class ZeldaGymEnv(gym.Env):
             prog["level"],
             prog["explore"],
             prog["navigation"],
-            prog["objective"],
+            prog["objectives"],
             prog["enemies"],
             prog["equipped"],
             prog["died"],
         )
 
     def create_exploration_memory(self):
-        w = self.output_shape[1]
+        w = self.pixel_output_shape[1]
         h = self.memory_height
 
         def make_reward_channel(r_val):
@@ -468,7 +572,7 @@ class ZeldaGymEnv(gym.Env):
             memory[col, row] = last_pixel * (255 // col_steps)
             return memory
 
-        level, explore, navigation, objective, enemies, equipped, died = (
+        level, explore, navigation, objectives, enemies, equipped, died = (
             self.group_rewards()
         )
         full_memory = np.stack(
@@ -476,7 +580,7 @@ class ZeldaGymEnv(gym.Env):
                 make_reward_channel(level),
                 make_reward_channel(explore),
                 make_reward_channel(navigation),
-                make_reward_channel(objective),
+                make_reward_channel(objectives),
                 make_reward_channel(enemies),
                 make_reward_channel(equipped),
                 make_reward_channel(died),
@@ -490,14 +594,24 @@ class ZeldaGymEnv(gym.Env):
         return rearrange(self.recent_memory, "(w h) c -> h w c", h=self.memory_height)
 
     def check_if_done(self):
-        if self.early_stop:
-            done = False
-            if self.step_count > 128 and self.recent_memory.sum() < (255 * 1):
-                done = True
-        else:
-            done = self.step_count >= self.max_steps
-        # done = self.read_hp_fraction() == 0
-        return done
+        terminated = False
+        truncated = False
+        if self.read_hp_fraction() == 0:
+            terminated = True
+
+        # Truncation conditions (e.g., max steps or early stopping)
+        elif self.step_count >= self.max_steps:
+            truncated = True
+            # print(f"Agent truncated: Max steps ({self.max_steps}) reached") # Optional: for debugging
+        elif (
+            self.early_stop
+            and self.step_count > 128
+            and self.recent_memory.sum() < (255 * 1)
+        ):
+            truncated = True
+            # print("Agent truncated: Early stop condition met") # Optional: for debugging
+
+        return terminated, truncated
 
     def save_and_print_info(self, done, obs_memory):
         if self.print_rewards:
@@ -595,7 +709,8 @@ class ZeldaGymEnv(gym.Env):
                 heal_amount = cur_health - self.last_health
                 if heal_amount > 0.25:
                     print(f"healed: {heal_amount}")
-                    self.save_screenshot("healing")
+                    # cancelling healing screeshot
+                    # self.save_screenshot("healing")
                 self.total_healing_rew += heal_amount * 4
             # else:
             #     self.died_count += 1
@@ -624,10 +739,10 @@ class ZeldaGymEnv(gym.Env):
         equipped = self.get_equipped_items()
         objectives = self.objective_cleared()
 
-        if self.print_rewards:
-            print(
-                f"""| Health: {health} |\n| Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}|\n| Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)} |\n| Distance: {distance} |\n"""
-            )
+        # if self.print_rewards:
+        #     print(
+        #         f"""| Health: {health} |\n| Player_corrdinates: {self.read_m(X_POS_ADDRESS), self.read_m(Y_POS_ADDRESS)}|\n| Target_coordinates: {self.read_m(X_DESTINATION), self.read_m(Y_DESTINATION)} |\n| Distance: {distance} |\n"""
+        #     )
 
         state_scores = {
             "event": event,
@@ -637,20 +752,22 @@ class ZeldaGymEnv(gym.Env):
             "explore": explore,
             "enemies": enemies,
             "navigation": navigation,
-            "objective": objectives,
+            "objectives": objectives,
             "equipped": equipped,
         }
 
         return state_scores
 
     def save_screenshot(self, name):
-        ss_dir = self.session_path / Path("screenshots/")
-        ss_dir.mkdir(exist_ok=True)
+        ss_dir = Path(self.session_path) / "screenshots"
+        ss_dir.mkdir(parents=True, exist_ok=True)
+        filename = (
+            f"frame{self.instance_id}_r{self.total_reward:.4f}_"
+            f"{self.reset_count}_{name}.jpeg"
+        )
+        filepath = ss_dir / filename
         plt.imsave(
-            ss_dir
-            / Path(
-                f"frame{self.instance_id}_r{self.total_reward:.4f}_{self.reset_count}_{name}.jpeg"
-            ),
+            filepath,
             self.render(reduce_res=False),
         )
 
